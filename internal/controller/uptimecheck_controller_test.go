@@ -181,8 +181,10 @@ var _ = Describe("UptimeCheck Controller", func() {
 			},
 		}
 
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		res, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).To(MatchError(ErrNoAPIToken))
+		Expect(errors.Is(err, reconcile.TerminalError(nil))).To(BeTrue())
+		Expect(res.RequeueAfter).To(BeZero())
 		Expect(apiCalls).To(Equal(0))
 
 		got := &monitoringv1alpha1.UptimeCheck{}

@@ -18,8 +18,8 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
-	"fmt"
 	"os"
 	"strings"
 
@@ -54,33 +54,14 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// envOr returns the value of the named environment variable, or def when it is
-// unset or empty. Used to let env vars seed flag defaults.
-func envOr(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return def
-}
-
-// serviceAccountNamespaceFile is where kubelet projects the Pod's namespace.
-const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-
 // operatorNamespace returns the namespace the operator runs in, from the
-// POD_NAMESPACE downward-API env var, falling back to the projected service
-// account namespace. Running outside a cluster (e.g. `make run`) requires
-// POD_NAMESPACE to be set explicitly.
+// POD_NAMESPACE downward-API env var set by both the chart and config/manager.
+// Running outside a cluster (e.g. `make run`) requires POD_NAMESPACE to be set
+// explicitly.
 func operatorNamespace() (string, error) {
-	if ns := strings.TrimSpace(os.Getenv("POD_NAMESPACE")); ns != "" {
-		return ns, nil
-	}
-	data, err := os.ReadFile(serviceAccountNamespaceFile)
-	if err != nil {
-		return "", fmt.Errorf("POD_NAMESPACE is unset and %s is unreadable: %w", serviceAccountNamespaceFile, err)
-	}
-	ns := strings.TrimSpace(string(data))
+	ns := strings.TrimSpace(os.Getenv("POD_NAMESPACE"))
 	if ns == "" {
-		return "", fmt.Errorf("POD_NAMESPACE is unset and %s is empty", serviceAccountNamespaceFile)
+		return "", errors.New("POD_NAMESPACE is unset")
 	}
 	return ns, nil
 }
@@ -113,12 +94,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&defaultTokenSecretName, "default-api-token-secret-name",
-		envOr("DEFAULT_API_TOKEN_SECRET_NAME", ""),
+	flag.StringVar(&defaultTokenSecretName, "default-api-token-secret-name", "",
 		"Name of the Secret holding the Uptime.com API token used by UptimeCheck resources "+
 			"that do not set spec.apiTokenSecretRef. Empty disables the fallback.")
-	flag.StringVar(&defaultTokenSecretKey, "default-api-token-secret-key",
-		envOr("DEFAULT_API_TOKEN_SECRET_KEY", "token"),
+	flag.StringVar(&defaultTokenSecretKey, "default-api-token-secret-key", "token",
 		"Key inside the default API token Secret.")
 	opts := zap.Options{
 		Development: true,

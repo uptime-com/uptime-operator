@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/uptime-com/uptime-client-go/v2/pkg/upapi"
 
@@ -80,8 +81,6 @@ type UptimeCheckReconciler struct {
 
 // Reconcile converges the remote Uptime.com check toward the desired spec.
 func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	var cr monitoringv1alpha1.UptimeCheck
 	if err := r.Get(ctx, req.NamespacedName, &cr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -93,11 +92,7 @@ func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		api, err := r.apiFor(ctx, &cr)
 		if err != nil {
-			r.setCondition(&cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, tokenErrorReason(err), err.Error())
-			if statusErr := r.Status().Update(ctx, &cr); statusErr != nil {
-				log.Error(statusErr, "status update after token error failed")
-			}
-			return ctrl.Result{RequeueAfter: requeueAfterError}, err
+			return r.reconcileTokenError(ctx, &cr, err)
 		}
 		return r.reconcileDelete(ctx, &cr, api)
 	}
@@ -112,14 +107,31 @@ func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	api, err := r.apiFor(ctx, &cr)
 	if err != nil {
-		r.setCondition(&cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, tokenErrorReason(err), err.Error())
-		if statusErr := r.Status().Update(ctx, &cr); statusErr != nil {
-			log.Error(statusErr, "status update after token error failed")
-		}
-		return ctrl.Result{RequeueAfter: requeueAfterError}, err
+		return r.reconcileTokenError(ctx, &cr, err)
 	}
 
 	return r.reconcileUpsert(ctx, &cr, api)
+}
+
+// reconcileTokenError records a token resolution failure on the status. A
+// missing token source is terminal: only a spec change or an operator restart
+// with a default configured can fix it, and both trigger a new reconcile.
+// Secret lookup failures are retried.
+func (r *UptimeCheckReconciler) reconcileTokenError(
+	ctx context.Context,
+	cr *monitoringv1alpha1.UptimeCheck,
+	err error,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	r.setCondition(cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, tokenErrorReason(err), err.Error())
+	if statusErr := r.Status().Update(ctx, cr); statusErr != nil {
+		log.Error(statusErr, "status update after token error failed")
+	}
+	if errors.Is(err, ErrNoAPIToken) {
+		return ctrl.Result{}, reconcile.TerminalError(err)
+	}
+	return ctrl.Result{RequeueAfter: requeueAfterError}, err
 }
 
 func (r *UptimeCheckReconciler) reconcileUpsert(

@@ -110,6 +110,14 @@ different teams or namespaces own different Uptime.com accounts.
 operator's own namespace, whatever namespace the check lives in - there is no
 per-namespace override, so a single token can serve the whole cluster.
 
+> **Security:** with a default token configured, anyone who can create an
+> `Ingress` annotated `monitoring.uptime.com/enabled` (or an `UptimeCheck`) in
+> *any* namespace can create and delete checks on the operator's Uptime.com
+> account - without a per-resource fallback they would need a token `Secret` in
+> their own namespace. Enable the default only when everyone who can create
+> `Ingress` or `UptimeCheck` resources in the cluster is trusted with that
+> account.
+
 ```sh
 kubectl -n uptime-operator-system create secret generic uptime-token \
   --from-literal=token=<your-api-token>
@@ -119,23 +127,41 @@ helm upgrade --install uptime-operator oci://ghcr.io/uptime-com/charts/uptime-op
   --set defaultApiToken.secretName=uptime-token
 ```
 
-Flags (all optional, env vars seed the defaults):
+Flags (all optional):
 
-| Flag | Env | Default | Meaning |
-| --- | --- | --- | --- |
-| `--default-api-token-secret-name` | `DEFAULT_API_TOKEN_SECRET_NAME` | *empty* | `Secret` name; empty disables the fallback |
-| `--default-api-token-secret-key` | `DEFAULT_API_TOKEN_SECRET_KEY` | `token` | key inside that `Secret` |
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--default-api-token-secret-name` | *empty* | `Secret` name; empty disables the fallback |
+| `--default-api-token-secret-key` | `token` | key inside that `Secret` |
 
 The operator's namespace comes from the `POD_NAMESPACE` downward-API env var
-(set by the chart and by `config/manager`), falling back to the projected
-service-account namespace. Running outside a cluster (`make run`) with a default
-token therefore needs `POD_NAMESPACE=<ns>` in the environment.
+(set by the chart and by `config/manager`); the manager exits at startup if it
+is empty while a default token is configured. Running outside a cluster
+(`make run`) with a default token therefore needs `POD_NAMESPACE=<ns>` in the
+environment.
 
 Precedence is per resource: `spec.apiTokenSecretRef` wins when set, the default
 applies otherwise, and a check with neither goes `Ready=False` with reason
 `TokenNotConfigured`. The same rules cover `Ingress`-derived checks: the
 `monitoring.uptime.com/api-token-secret` annotation is optional too, and its
 absence means "use the default".
+
+Caveats:
+
+- **Deletion needs the token too.** Removing a check calls the Uptime.com API
+  with the same token that created it. If a check was created through the
+  default and the operator is later restarted without
+  `--default-api-token-secret-name`, or the default `Secret` is removed,
+  deleting the `UptimeCheck` leaves it `Terminating` behind its finalizer, and
+  deleting its namespace hangs. Since the `Secret` lives in the operator's
+  namespace, the namespace owner can neither see nor fix this: restore the
+  default (or set `spec.apiTokenSecretRef`) before deleting such checks.
+- **Switching tokens does not move checks.** Removing
+  `spec.apiTokenSecretRef` or the `monitoring.uptime.com/api-token-secret`
+  annotation silently switches the check to the default token (and vice
+  versa). If the two tokens belong to different accounts, the operator gets a
+  404 for `status.remoteCheckID`, recreates the check in the new account and
+  leaves the old one running in the previous account - delete it there by hand.
 
 ## Development
 

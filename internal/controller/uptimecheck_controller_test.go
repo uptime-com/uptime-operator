@@ -60,7 +60,7 @@ var _ = Describe("UptimeCheck Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: ns},
 			Spec: monitoringv1alpha1.UptimeCheckSpec{
 				Type:              monitoringv1alpha1.CheckTypeHTTP,
-				APITokenSecretRef: monitoringv1alpha1.SecretKeyReference{Name: "uptime-token"},
+				APITokenSecretRef: &monitoringv1alpha1.SecretKeyReference{Name: "uptime-token"},
 				HTTP:              &monitoringv1alpha1.HTTPSpec{URL: "https://example.com/health"},
 			},
 		})).To(Succeed())
@@ -94,7 +94,7 @@ var _ = Describe("UptimeCheck Controller", func() {
 			},
 			Spec: monitoringv1alpha1.UptimeCheckSpec{
 				Type:              monitoringv1alpha1.CheckTypeHTTP,
-				APITokenSecretRef: monitoringv1alpha1.SecretKeyReference{Name: "missing-secret"},
+				APITokenSecretRef: &monitoringv1alpha1.SecretKeyReference{Name: "missing-secret"},
 				HTTP:              &monitoringv1alpha1.HTTPSpec{URL: "https://example.com/health"},
 			},
 		}
@@ -117,5 +117,79 @@ var _ = Describe("UptimeCheck Controller", func() {
 		Expect(got.Status.Conditions[0].Type).To(Equal(monitoringv1alpha1.ConditionTypeReady))
 		Expect(got.Status.Conditions[0].Status).To(Equal(metav1.ConditionFalse))
 		Expect(got.Status.Conditions[0].Reason).To(Equal("TokenUnavailable"))
+	})
+
+	It("falls back to the operator's default token Secret when the spec omits the ref", func() {
+		ctx := context.Background()
+		Expect(k8sClient.Create(ctx, &monitoringv1alpha1.UptimeCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       resourceName,
+				Namespace:  ns,
+				Finalizers: []string{monitoringv1alpha1.Finalizer},
+			},
+			Spec: monitoringv1alpha1.UptimeCheckSpec{
+				Type: monitoringv1alpha1.CheckTypeHTTP,
+				HTTP: &monitoringv1alpha1.HTTPSpec{URL: "https://example.com/health"},
+			},
+		})).To(Succeed())
+
+		var gotNS, gotName, gotKey string
+		reconciler := &UptimeCheckReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			DefaultTokenSecret: DefaultTokenSecret{
+				Namespace: "uptime-operator-system",
+				Name:      "operator-default-token",
+				Key:       "api-token",
+			},
+			NewAPI: func(
+				_ context.Context, _ client.Client, namespace, secret, secretKey, _ string,
+			) (upapi.API, error) {
+				gotNS, gotName, gotKey = namespace, secret, secretKey
+				return nil, errors.New("stop before calling the API")
+			},
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).To(HaveOccurred())
+		Expect(gotNS).To(Equal("uptime-operator-system"))
+		Expect(gotName).To(Equal("operator-default-token"))
+		Expect(gotKey).To(Equal("api-token"))
+	})
+
+	It("reports TokenNotConfigured when neither the spec nor the operator names a Secret", func() {
+		ctx := context.Background()
+		Expect(k8sClient.Create(ctx, &monitoringv1alpha1.UptimeCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       resourceName,
+				Namespace:  ns,
+				Finalizers: []string{monitoringv1alpha1.Finalizer},
+			},
+			Spec: monitoringv1alpha1.UptimeCheckSpec{
+				Type: monitoringv1alpha1.CheckTypeHTTP,
+				HTTP: &monitoringv1alpha1.HTTPSpec{URL: "https://example.com/health"},
+			},
+		})).To(Succeed())
+
+		apiCalls := 0
+		reconciler := &UptimeCheckReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			NewAPI: func(context.Context, client.Client, string, string, string, string) (upapi.API, error) {
+				apiCalls++
+				return nil, errors.New("should not be called without a token source")
+			},
+		}
+
+		res, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).To(MatchError(ErrNoAPIToken))
+		Expect(errors.Is(err, reconcile.TerminalError(nil))).To(BeTrue())
+		Expect(res.RequeueAfter).To(BeZero())
+		Expect(apiCalls).To(Equal(0))
+
+		got := &monitoringv1alpha1.UptimeCheck{}
+		Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+		Expect(got.Status.Conditions).NotTo(BeEmpty())
+		Expect(got.Status.Conditions[0].Reason).To(Equal("TokenNotConfigured"))
 	})
 })

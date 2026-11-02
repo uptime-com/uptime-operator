@@ -74,8 +74,11 @@ type UptimeCheckSpec struct {
 
 	// apiTokenSecretRef points to a Secret in the same namespace holding the
 	// Uptime.com API token under key "token" (override with .key).
-	// +kubebuilder:validation:Required
-	APITokenSecretRef SecretKeyReference `json:"apiTokenSecretRef"`
+	// When omitted, the operator falls back to its own default token Secret
+	// (--default-api-token-secret-name); reconciliation fails with
+	// TokenNotConfigured if no default is configured either.
+	// +optional
+	APITokenSecretRef *SecretKeyReference `json:"apiTokenSecretRef,omitempty"`
 
 	// apiURL overrides the Uptime.com API base URL. Defaults to
 	// https://uptime.com/api/v1/. Useful for pointing the operator at the

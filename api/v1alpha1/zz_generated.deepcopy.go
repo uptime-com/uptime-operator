@@ -132,7 +132,11 @@ func (in *UptimeCheckSpec) DeepCopyInto(out *UptimeCheckSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	out.APITokenSecretRef = in.APITokenSecretRef
+	if in.APITokenSecretRef != nil {
+		in, out := &in.APITokenSecretRef, &out.APITokenSecretRef
+		*out = new(SecretKeyReference)
+		**out = **in
+	}
 	if in.HTTP != nil {
 		in, out := &in.HTTP, &out.HTTP
 		*out = new(HTTPSpec)

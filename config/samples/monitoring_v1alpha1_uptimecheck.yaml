@@ -28,6 +28,8 @@ spec:
     - Austria-Vienna
   tags:
     - example
+  # Optional: drop this block to use the operator's default token Secret
+  # (--default-api-token-secret-name, read from the operator's namespace).
   apiTokenSecretRef:
     name: uptime-token
     key: token

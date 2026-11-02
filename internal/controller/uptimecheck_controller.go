@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/uptime-com/uptime-client-go/v2/pkg/upapi"
 
@@ -40,10 +41,33 @@ import (
 // requeueAfterError is the retry delay for transient failures (network, 5xx).
 const requeueAfterError = 30 * time.Second
 
+// ErrNoAPIToken is returned when a resource omits spec.apiTokenSecretRef and
+// the operator has no default token Secret configured.
+var ErrNoAPIToken = errors.New(
+	"no API token: set spec.apiTokenSecretRef or start the operator with --default-api-token-secret-name",
+)
+
+// DefaultTokenSecret is the operator-wide fallback token Secret, used by any
+// UptimeCheck that leaves spec.apiTokenSecretRef empty. Name empty = no
+// default configured.
+type DefaultTokenSecret struct {
+	// Namespace holding the Secret: always the operator's own namespace, not
+	// the namespace of the reconciled resource. Required when Name is set.
+	Namespace string
+	// Name of the Secret.
+	Name string
+	// Key inside the Secret's data map. Empty means "token".
+	Key string
+}
+
 // UptimeCheckReconciler reconciles a UptimeCheck object.
 type UptimeCheckReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// DefaultTokenSecret is the fallback token source for resources that do
+	// not carry their own spec.apiTokenSecretRef.
+	DefaultTokenSecret DefaultTokenSecret
 
 	// NewAPI is the API factory; tests inject a fake. Production uses
 	// upclient.NewFromSecret.
@@ -57,8 +81,6 @@ type UptimeCheckReconciler struct {
 
 // Reconcile converges the remote Uptime.com check toward the desired spec.
 func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	var cr monitoringv1alpha1.UptimeCheck
 	if err := r.Get(ctx, req.NamespacedName, &cr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -70,11 +92,7 @@ func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		api, err := r.apiFor(ctx, &cr)
 		if err != nil {
-			r.setCondition(&cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, "TokenUnavailable", err.Error())
-			if statusErr := r.Status().Update(ctx, &cr); statusErr != nil {
-				log.Error(statusErr, "status update after token error failed")
-			}
-			return ctrl.Result{RequeueAfter: requeueAfterError}, err
+			return r.reconcileTokenError(ctx, &cr, err)
 		}
 		return r.reconcileDelete(ctx, &cr, api)
 	}
@@ -89,14 +107,31 @@ func (r *UptimeCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	api, err := r.apiFor(ctx, &cr)
 	if err != nil {
-		r.setCondition(&cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, "TokenUnavailable", err.Error())
-		if statusErr := r.Status().Update(ctx, &cr); statusErr != nil {
-			log.Error(statusErr, "status update after token error failed")
-		}
-		return ctrl.Result{RequeueAfter: requeueAfterError}, err
+		return r.reconcileTokenError(ctx, &cr, err)
 	}
 
 	return r.reconcileUpsert(ctx, &cr, api)
+}
+
+// reconcileTokenError records a token resolution failure on the status. A
+// missing token source is terminal: only a spec change or an operator restart
+// with a default configured can fix it, and both trigger a new reconcile.
+// Secret lookup failures are retried.
+func (r *UptimeCheckReconciler) reconcileTokenError(
+	ctx context.Context,
+	cr *monitoringv1alpha1.UptimeCheck,
+	err error,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	r.setCondition(cr, monitoringv1alpha1.ConditionTypeReady, metav1.ConditionFalse, tokenErrorReason(err), err.Error())
+	if statusErr := r.Status().Update(ctx, cr); statusErr != nil {
+		log.Error(statusErr, "status update after token error failed")
+	}
+	if errors.Is(err, ErrNoAPIToken) {
+		return ctrl.Result{}, reconcile.TerminalError(err)
+	}
+	return ctrl.Result{RequeueAfter: requeueAfterError}, err
 }
 
 func (r *UptimeCheckReconciler) reconcileUpsert(
@@ -173,13 +208,36 @@ func (r *UptimeCheckReconciler) reconcileDelete(
 }
 
 func (r *UptimeCheckReconciler) apiFor(ctx context.Context, cr *monitoringv1alpha1.UptimeCheck) (upapi.API, error) {
-	return r.NewAPI(
-		ctx, r.Client,
-		cr.Namespace,
-		cr.Spec.APITokenSecretRef.Name,
-		cr.Spec.APITokenSecretRef.Key,
-		cr.Spec.APIURL,
-	)
+	namespace, name, key, err := r.tokenSecretFor(cr)
+	if err != nil {
+		return nil, err
+	}
+	return r.NewAPI(ctx, r.Client, namespace, name, key, cr.Spec.APIURL)
+}
+
+// tokenSecretFor resolves which Secret holds the API token for cr: the
+// per-resource spec.apiTokenSecretRef (always read from the resource's own
+// namespace) when set, otherwise the operator-wide default, which lives in the
+// operator's namespace.
+func (r *UptimeCheckReconciler) tokenSecretFor(
+	cr *monitoringv1alpha1.UptimeCheck,
+) (namespace, name, key string, err error) {
+	if ref := cr.Spec.APITokenSecretRef; ref != nil && ref.Name != "" {
+		return cr.Namespace, ref.Name, ref.Key, nil
+	}
+	if r.DefaultTokenSecret.Name == "" {
+		return "", "", "", ErrNoAPIToken
+	}
+	return r.DefaultTokenSecret.Namespace, r.DefaultTokenSecret.Name, r.DefaultTokenSecret.Key, nil
+}
+
+// tokenErrorReason distinguishes a missing configuration (permanent, needs a
+// spec or operator change) from a token lookup failure (often transient).
+func tokenErrorReason(err error) string {
+	if errors.Is(err, ErrNoAPIToken) {
+		return "TokenNotConfigured"
+	}
+	return "TokenUnavailable"
 }
 
 // SetupWithManager sets up the controller with the Manager.

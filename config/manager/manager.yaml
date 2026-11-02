@@ -63,8 +63,18 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # Uncomment to let UptimeCheck resources omit spec.apiTokenSecretRef and
+          # share one token Secret living in the operator's namespace.
+          # - --default-api-token-secret-name=uptime-token
+          # - --default-api-token-secret-key=token
         image: controller:latest
         name: manager
+        env:
+          # Default namespace for the operator-wide API token Secret.
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
         ports:
         - containerPort: 8081
           name: health

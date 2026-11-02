@@ -8,6 +8,7 @@ metadata:
     monitoring.uptime.com/interval: "5"
     monitoring.uptime.com/expect-status: "200"
     monitoring.uptime.com/contact-groups: "Default"
+    # Optional: omit to use the operator's default token Secret.
     monitoring.uptime.com/api-token-secret: uptime-token
     # locations is required by the Uptime.com API. Comma-separated probe location
     # names from /api/v1/probe-servers/.

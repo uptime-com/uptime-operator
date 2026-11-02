@@ -59,6 +59,9 @@ spec:
                 description: |-
                   apiTokenSecretRef points to a Secret in the same namespace holding the
                   Uptime.com API token under key "token" (override with .key).
+                  When omitted, the operator falls back to its own default token Secret
+                  (--default-api-token-secret-name); reconciliation fails with
+                  TokenNotConfigured if no default is configured either.
                 properties:
                   key:
                     default: token
@@ -171,7 +174,6 @@ spec:
                 - HTTP
                 type: string
             required:
-            - apiTokenSecretRef
             - type
             type: object
           status:

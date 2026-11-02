@@ -104,6 +104,31 @@ manager:
   #   labels: {}
   #   annotations: {}
 
+## Operator-wide default Uptime.com API token.
+## Used by every UptimeCheck that leaves spec.apiTokenSecretRef empty, so a
+## single Secret can serve all namespaces. The Secret must live in the release
+## namespace (the operator's own namespace) and is NOT created by this chart -
+## create it beforehand, e.g.:
+##   kubectl -n <release-ns> create secret generic uptime-token \
+##     --from-literal=token=<your-api-token>
+##
+## SECURITY: once set, anyone who can create an Ingress annotated
+## monitoring.uptime.com/enabled (or an UptimeCheck) in ANY namespace can create
+## and delete checks on this token's Uptime.com account. Enable it only when
+## everyone who can create Ingress or UptimeCheck resources in the cluster is
+## trusted with that account.
+##
+defaultApiToken:
+  ## Name of the existing Secret holding the token.
+  ## Empty (default) disables the fallback: each UptimeCheck must then set
+  ## spec.apiTokenSecretRef itself.
+  ##
+  secretName: ""
+
+  ## Key inside that Secret
+  ##
+  secretKey: token
+
 ## RBAC configuration
 ##
 rbac:

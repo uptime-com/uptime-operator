@@ -147,22 +147,22 @@ func specFromIngress(ing *networkingv1.Ingress) (monitoringv1alpha1.UptimeCheckS
 		return monitoringv1alpha1.UptimeCheckSpec{}, err
 	}
 
-	tokenSecret := strings.TrimSpace(ing.Annotations[annoTokenSecret])
-	if tokenSecret == "" {
-		return monitoringv1alpha1.UptimeCheckSpec{}, fmt.Errorf("annotation %s is required", annoTokenSecret)
-	}
-
 	spec := monitoringv1alpha1.UptimeCheckSpec{
 		Type: monitoringv1alpha1.CheckTypeHTTP,
 		Name: strings.TrimSpace(ing.Annotations[annoNameOverride]),
-		APITokenSecretRef: monitoringv1alpha1.SecretKeyReference{
-			Name: tokenSecret,
-			Key:  strings.TrimSpace(ing.Annotations[annoTokenKey]),
-		},
 		HTTP: &monitoringv1alpha1.HTTPSpec{
 			URL:        url,
 			StatusCode: strings.TrimSpace(ing.Annotations[annoExpectStatus]),
 		},
+	}
+
+	// The token annotation is optional: without it the derived check inherits
+	// the operator's default token Secret.
+	if tokenSecret := strings.TrimSpace(ing.Annotations[annoTokenSecret]); tokenSecret != "" {
+		spec.APITokenSecretRef = &monitoringv1alpha1.SecretKeyReference{
+			Name: tokenSecret,
+			Key:  strings.TrimSpace(ing.Annotations[annoTokenKey]),
+		}
 	}
 
 	if v := strings.TrimSpace(ing.Annotations[annoInterval]); v != "" {
